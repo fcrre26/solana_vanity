@@ -1,6 +1,6 @@
 import subprocess
 import sys
-import pkg_resources # type: ignore
+from importlib.metadata import distributions  # 替换 pkg_resources
 
 def check_and_install_dependencies():
     """
@@ -23,7 +23,8 @@ def check_and_install_dependencies():
             print(f"{package_name} 安装失败！")
             return False
 
-    installed_packages = {pkg.key for pkg in pkg_resources.working_set}
+    # 使用新的API检查已安装的包
+    installed_packages = {dist.metadata['Name'] for dist in distributions()}
     
     all_installed = True
     for package, pip_name in required_packages.items():
