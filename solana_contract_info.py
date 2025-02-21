@@ -833,8 +833,8 @@ class ContractAnalyzer:
             return {"error": f"获取代币信息失败: {str(e)}"}
 
     def analyze_token_relationships(self, contract_address: str) -> dict:
-        """分析代币关系网络"""
         try:
+            print("开始分析代币关系...")
             pubkey = Pubkey.from_string(contract_address)
             
             # 首先获取合约基本信息
@@ -854,111 +854,87 @@ class ContractAnalyzer:
                 "风险关联": []
             }
 
-            # 1. 分析最近交易中的交互地址
+            # 1. 修改交易解析逻辑
             try:
                 recent_txs = contract_info.get('最近交易', [])
                 interacted_addresses = set()
                 
                 for tx in recent_txs:
                     try:
+                        # 修改交易获取方式
                         tx_info = self.client.get_transaction(
                             tx['签名'],
                             commitment=Commitment("confirmed"),
                             max_supported_transaction_version=0
                         )
                         if tx_info.value:
-                            # 获取交易中的账户
-                            transaction = tx_info.value.transaction
-                            if hasattr(transaction, 'message'):
-                                account_keys = transaction.message.account_keys
-                            else:
-                                # 尝试从编码的交易中获取账户
-                                encoded_tx = transaction.encode()
-                                account_keys = encoded_tx.get('message', {}).get('accountKeys', [])
+                            # 使用更健壮的账户提取方式
+                            transaction_json = tx_info.value.to_json()
+                            account_keys = transaction_json.get('result', {}).get('transaction', {}).get('message', {}).get('accountKeys', [])
                             
                             for account in account_keys:
                                 addr = str(account)
                                 if addr != contract_address:
                                     interacted_addresses.add(addr)
                     except Exception as e:
-                        error_msg = str(e) if str(e) else "未知错误"
-                        print(f"处理交易 {tx['签名']} 时出错: {error_msg}")
+                        print(f"处理交易 {tx['签名']} 时出错: {str(e)}")
                         continue
-                    
-                # 分析每个交互地址
-                for addr in interacted_addresses:
-                    try:
-                        addr_info = self.get_program_info(addr)
-                        if "error" not in addr_info:
-                            relationships["交互地址"].append({
-                                "地址": addr,
-                                "类型": "合约" if addr_info.get("是否可执行") else "账户",
-                                "最近交互": addr_info.get("最近交易", [])[:3],
-                                "安全评分": addr_info.get("安全评分", {}).get("score", 0)
-                            })
-                    except Exception as e:
-                        print(f"分析地址 {addr} 时出错: {str(e)}")
-                        continue
-                    
-            except Exception as e:
-                print(f"分析交易交互时出错: {str(e)}")
 
-            # 2. 分析代币持有者关系
+            except Exception as e:  # 添加异常处理
+                print(f"交易解析失败: {str(e)}")
+
+            # 2. 修改代币账户解析部分
             try:
                 token_accounts = self.client.get_token_accounts_by_owner(
                     pubkey,
                     {"programId": Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")}
                 )
                 
-                if token_accounts.value:
+                if token_accounts and hasattr(token_accounts, 'value'):
                     for account in token_accounts.value:
                         try:
-                            # 直接从account.account.data获取数据
-                            account_data = account.account.data
-                            if account_data:
-                                mint_address = str(Pubkey.from_bytes(base64.b64decode(account_data)[:32]))
-                                token_info = self.get_token_info(mint_address)
+                            # 使用更安全的字节码解析方式
+                            if hasattr(account.account.data, 'parsed'):
+                                mint_address = account.account.data.parsed['info']['mint']
+                            else:
+                                raw_data = base64.b64decode(account.account.data)
+                                mint_address = str(Pubkey.from_bytes(raw_data[:32]))
                                 
-                                if "error" not in token_info:
-                                    relationships["关联代币"].append({
-                                        "代币地址": mint_address,
-                                        "账户地址": str(account.pubkey),
-                                        "持有者数量": len(token_info.get("持有者", [])),
-                                        "持有者": token_info.get("持有者", [])[:5],
-                                        "最近交易": token_info.get("最近交易", [])[:3]
-                                    })
+                            token_info = self.get_token_info(mint_address)
+                            if "error" not in token_info:
+                                relationships["关联代币"].append({
+                                    "代币地址": mint_address,
+                                    "账户地址": str(account.pubkey),
+                                    "持有者数量": len(token_info.get("持有者", [])),
+                                    "持有者": token_info.get("持有者", [])[:5],
+                                    "最近交易": token_info.get("最近交易", [])[:3]
+                                })
                         except Exception as e:
                             print(f"分析代币账户时出错: {str(e)}")
                             continue
-                            
-            except Exception as e:
-                print(f"获取代币账户时出错: {str(e)}")
 
-            # 3. 分析相似合约
+            except Exception as e:  # 添加异常处理
+                print(f"代币账户解析失败: {str(e)}")
+
+            # 3. 修改相似合约分析部分
             try:
                 if contract_info.get('字节码'):
-                    bytecode_prefix = base64.b64decode(contract_info['字节码'])[:32]
-                    bytecode_b64 = base64.b64encode(bytecode_prefix).decode('utf-8')
-                    
+                    # 添加分页和过滤条件
                     similar_programs = self.client.get_program_accounts(
                         Pubkey.from_string("BPFLoaderUpgradeab1e11111111111111111111111"),
-                        filters=[{
-                            "memcmp": {
-                                "offset": 0,
-                                "bytes": bytecode_b64
-                            }
-                        }]
+                        filters=[{"dataSize": len(contract_info['字节码'])}]
                     )
                     
                     if similar_programs.value:
-                        for program in similar_programs.value[:10]:
+                        for program in similar_programs.value:
                             if str(program.pubkey) != contract_address:
                                 try:
                                     program_info = self.get_program_info(str(program.pubkey))
-                                    if "error" not in program_info:
+                                    if "error" not in program_info and program_info.get('字节码'):
+                                        # 直接比较字节码
                                         similarity = self.calculate_bytecode_similarity(
                                             contract_info['字节码'],
-                                            program_info.get('字节码', '')
+                                            program_info['字节码']
                                         )
                                         
                                         if similarity > 0.8:
@@ -984,10 +960,24 @@ class ContractAnalyzer:
                 "分析时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             
+            print(f"合约基本信息获取成功: {contract_info.get('程序所有者')}")
+            print(f"开始分析最近 {len(contract_info.get('最近交易', []))} 笔交易...")
+            # ... 交易分析代码 ...
+            
+            print(f"交易分析完成，发现 {len(interacted_addresses)} 个交互地址")
+            print("开始分析代币账户...")
+            # ... 代币分析代码 ...
+            
+            print("开始分析相似合约...")
+            # ... 相似合约分析代码 ...
+            
+            print("分析完成")
             return relationships
             
         except Exception as e:
             print(f"详细错误: {str(e)}")
+            print(f"错误类型: {type(e)}")
+            print(f"错误位置: {e.__traceback__.tb_frame.f_code.co_name}")
             return {"error": f"分析代币关系失败: {str(e)}"}
 
     def calculate_bytecode_similarity(self, bytecode1: str, bytecode2: str) -> float:
@@ -1164,11 +1154,6 @@ def print_menu():
 === Solana 合约分析工具 ===
 1. 分析单个合约
 2. 批量分析多个合约
-3. 仅分析安全漏洞
-4. 仅分析发币平台
-5. 查看合约交易历史
-6. 导出分析报告
-7. 追踪关联代币 [新]
 0. 退出程序
 =====================""")
 
@@ -1188,7 +1173,7 @@ def main():
     while True:
         print_menu()
         try:
-            choice = input("\n请选择功能 (0-7): ").strip()
+            choice = input("\n请选择功能 (0-2): ").strip()
             
             if choice == '0':
                 print("感谢使用！")
@@ -1230,172 +1215,6 @@ def main():
                     print("\n" + report)
                     filename = save_report(report, addr)
                     print(f"报告已保存到文件: {filename}")
-                
-            elif choice == '3':
-                # 仅分析安全漏洞
-                contract_address = input("\n请输入要分析的合约地址: ").strip()
-                if not contract_address:
-                    print("地址不能为空！")
-                    continue
-                
-                print("\n正在分析合约安全性...")
-                analyzer = ContractAnalyzer()
-                info = analyzer.get_program_info(contract_address)
-                
-                if "error" in info:
-                    print(f"错误: {info['error']}")
-                    continue
-                
-                print(f"\n安全评分: {info['安全评分']['score']:.1f}/100.0")
-                
-                print("\n高风险漏洞:")
-                for vuln in info['漏洞分析']['high_risk']:
-                    print(f"- {vuln['name']}")
-                    print(f"  描述: {vuln['description']}")
-                    print(f"  发现特征: {', '.join(vuln['matched_patterns'])}")
-                
-                print("\n中风险漏洞:")
-                for vuln in info['漏洞分析']['medium_risk']:
-                    print(f"- {vuln['name']}")
-                    print(f"  描述: {vuln['description']}")
-                    print(f"  发现特征: {', '.join(vuln['matched_patterns'])}")
-                
-                print("\n低风险漏洞:")
-                for vuln in info['漏洞分析']['low_risk']:
-                    print(f"- {vuln['name']}")
-                    print(f"  描述: {vuln['description']}")
-                    print(f"  发现特征: {', '.join(vuln['matched_patterns'])}")
-                
-            elif choice == '4':
-                # 仅分析发币平台
-                contract_address = input("\n请输入要分析的合约地址: ").strip()
-                if not contract_address:
-                    print("地址不能为空！")
-                    continue
-                
-                print("\n正在分析发币平台...")
-                analyzer = ContractAnalyzer()
-                info = analyzer.get_program_info(contract_address)
-                
-                if "error" in info:
-                    print(f"错误: {info['error']}")
-                    continue
-                
-                if "发币平台分析" in info and info["发币平台分析"]:
-                    for plat in info["发币平台分析"]["platforms"]:
-                        print(f"\n可能的平台: {plat['platform_name']}")
-                        print(f"置信度: {plat['confidence']*100:.1f}%")
-                        print("原因:")
-                        for reason in plat['reasons']:
-                            print(f"  - {reason}")
-                else:
-                    print("\n未识别出具体的发币平台")
-                
-            elif choice == '5':
-                # 查看合约交易历史
-                contract_address = input("\n请输入要分析的合约地址: ").strip()
-                if not contract_address:
-                    print("地址不能为空！")
-                    continue
-                
-                print("\n正在获取交易历史...")
-                analyzer = ContractAnalyzer()
-                info = analyzer.get_program_info(contract_address)
-                
-                if "error" in info:
-                    print(f"错误: {info['error']}")
-                    continue
-                
-                print(f"\n最近 {len(info['最近交易'])} 笔交易:")
-                for tx in info['最近交易']:
-                    print(f"\n签名: {tx['签名']}")
-                    print(f"时间: {tx['时间']}")
-                    print(f"状态: {tx['状态']}")
-                
-            elif choice == '6':
-                # 导出分析报告
-                contract_address = input("\n请输入要分析的合约地址: ").strip()
-                if not contract_address:
-                    print("地址不能为空！")
-                    continue
-                
-                output_file = input("请输入报告文件名 (默认为自动生成): ").strip()
-                
-                print("\n正在生成报告...")
-                analyzer = ContractAnalyzer()
-                report = analyzer.generate_report(contract_address)
-                
-                if output_file:
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(report)
-                    print(f"\n报告已保存到: {output_file}")
-                else:
-                    filename = save_report(report, contract_address)
-                    print(f"\n报告已保存到: {filename}")
-            
-            elif choice == '7':
-                # 追踪关联代币
-                contract_address = input("\n请输入要分析的合约地址: ").strip()
-                if not contract_address:
-                    print("地址不能为空！")
-                    continue
-                
-                print("\n正在分析代币关系...")
-                analyzer = ContractAnalyzer()
-                relationships = analyzer.analyze_token_relationships(contract_address)
-                
-                if "error" in relationships:
-                    print(f"错误: {relationships['error']}")
-                    continue
-                
-                print("\n=== 代币关系分析报告 ===")
-                print(f"合约地址: {relationships['合约信息']['地址']}")
-                print(f"创建者: {relationships['合约信息']['创建者']}")
-                
-                # 显示关联代币信息
-                print(f"\n发现 {relationships['统计信息']['关联代币数量']} 个关联代币:")
-                for idx, token in enumerate(relationships['关联代币'], 1):
-                    print(f"\n代币 {idx}:")
-                    print(f"地址: {token['代币地址']}")
-                    print(f"持有者数量: {token['持有者数量']}")
-                    if token['最近交易']:
-                        print("最近交易:")
-                        for tx in token['最近交易'][:3]:  # 只显示最近3笔
-                            print(f"  - 时间: {tx['时间']}")
-                            print(f"    状态: {tx['状态']}")
-                
-                # 显示创建者其他合约信息
-                print(f"\n发现 {relationships['统计信息']['相似合约数量']} 个相似合约:")
-                for idx, contract in enumerate(relationships['关联合约'], 1):
-                    print(f"\n合约 {idx}:")
-                    print(f"地址: {contract['合约地址']}")
-                    print(f"相似度: {contract['相似度']:.2f}")
-                    print(f"创建者: {contract['创建者']}")
-                    print(f"安全评分: {contract['安全评分']:.1f}")
-                
-                # 显示交互地址信息
-                print(f"\n发现 {relationships['统计信息']['交互地址数量']} 个交互地址:")
-                for idx, addr in enumerate(relationships['交互地址'], 1):
-                    print(f"\n地址 {idx}:")
-                    print(f"地址: {addr['地址']}")
-                    print(f"类型: {addr['类型']}")
-                    print(f"最近交互: {', '.join([tx['时间'] for tx in addr['最近交互']])}")
-                
-                # 显示风险关联信息
-                print(f"\n发现 {relationships['统计信息']['风险关联数量']} 个风险关联:")
-                for idx, risk in enumerate(relationships['风险关联'], 1):
-                    print(f"\n风险 {idx}:")
-                    print(f"地址: {risk['地址']}")
-                    print(f"风险等级: {risk['风险等级']}")
-                    print(f"风险描述: {risk['风险描述']}")
-                    print(f"关联类型: {risk['关联类型']}")
-                
-                # 保存分析结果
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = f"token_analysis_{contract_address[:8]}_{timestamp}.json"
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(relationships, f, indent=2, ensure_ascii=False)
-                print(f"\n详细分析结果已保存到: {filename}")
             
             input("\n按回车键继续...")
             
