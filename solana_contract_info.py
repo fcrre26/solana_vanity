@@ -8,6 +8,10 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import requests
 from pathlib import Path
+import time
+import os
+import argparse
+import shutil
 
 def detect_os() -> str:
     """检测操作系统类型"""
@@ -19,50 +23,198 @@ def detect_os() -> str:
     else:
         return 'other'
 
-def check_and_install_dependencies():
-    """检查并安装所需的依赖库"""
-    required_packages = {
-        'solders': 'solders',
-        'solana': 'solana',
-        'requests': 'requests'
-    }
-    
-    def install_package(package_name):
-        print(f"正在安装 {package_name}...")
+def check_system_dependencies():
+    """检查并安装系统级依赖"""
+    if detect_os() == 'linux':
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package_name],
-                               stdout=subprocess.DEVNULL, 
-                               stderr=subprocess.DEVNULL)
-            print(f"{package_name} 安装成功！")
+            print("\n正在检查系统依赖...")
+            # 准备安装命令
+            commands = [
+                "sudo apt-get update",
+                "sudo apt-get install -y build-essential python3-dev",
+                "sudo apt-get install -y pkg-config libssl-dev",
+                "sudo apt-get install -y python3-pip"
+            ]
+            
+            # 执行安装命令
+            for cmd in commands:
+                print(f"\n执行: {cmd}")
+                result = subprocess.run(cmd.split(), capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"❌ 命令执行失败: {result.stderr}")
+                    return False
+                print("✅ 执行成功")
+            
+            # 安装 Rust
+            if not Path.home().joinpath('.cargo/env').exists():
+                print("\n正在安装 Rust...")
+                rust_install = subprocess.run(
+                    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+                if rust_install.returncode != 0:
+                    print(f"❌ Rust 安装失败: {rust_install.stderr}")
+                    return False
+                print("✅ Rust 安装成功")
+                
+                # 更新环境变量
+                cargo_env = str(Path.home().joinpath('.cargo/env'))
+                os.environ["PATH"] = f"{os.environ['PATH']}:{str(Path.home().joinpath('.cargo/bin'))}"
+                
+                # 使用bash执行source命令
+                try:
+                    subprocess.run(f"bash -c 'source {cargo_env}'", shell=True, check=True)
+                    print("✅ Rust环境变量已更新")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠️ Rust环境变量更新失败: {e}")
+                    # 继续执行，因为我们已经更新了PATH
+            
+            # 验证 Rust 安装
+            try:
+                subprocess.run(["cargo", "--version"], check=True, capture_output=True)
+                print("✅ Rust 安装验证成功")
+            except subprocess.CalledProcessError:
+                print("❌ Rust 安装验证失败")
+                return False
+            
             return True
+            
         except Exception as e:
-            print(f"{package_name} 安装失败: {str(e)}")
+            print(f"❌ 安装系统依赖失败: {str(e)}")
             return False
+    return True
 
+def install_package(package_name):
+    """安装Python包"""
+    print(f"正在安装 {package_name}...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        print(f"✅ {package_name} 安装成功！")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ {package_name} 安装失败: {str(e)}")
+        sys.exit(1)
+
+def check_and_install_dependencies():
+    """完全自动化的依赖安装"""
+    def is_venv():
+        return (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) or \
+               (hasattr(sys, 'real_prefix') and sys.real_prefix != sys.prefix)
+    
+    # 自动创建虚拟环境
+    if not is_venv():
+        print("\n🚀 开始全自动环境配置...")
+        try:
+            # 修改1: 使用当前目录而不是/opt目录
+            project_dir = Path.cwd()
+            project_dir.mkdir(exist_ok=True, parents=True)
+            os.chdir(project_dir)
+            print(f"📁 工作目录: {project_dir}")
+
+            # 修改2: 添加python3-venv到系统依赖
+            if detect_os() == 'linux':
+                print("🛠 安装系统依赖...")
+                subprocess.run(['apt-get', 'update', '-qq'], check=True)
+                subprocess.run(['apt-get', 'install', '-y', 
+                              'python3-dev', 'python3-venv', 'libssl-dev',  # 确保包含python3-venv
+                              'build-essential', 'pkg-config', 'curl'], check=True)
+
+            # 修改3: 在当前目录创建虚拟环境
+            venv_path = project_dir / 'venv'
+            if venv_path.exists():
+                print("♻️ 清理旧虚拟环境...")
+                shutil.rmtree(venv_path)
+            print("🐍 创建新虚拟环境...")
+            subprocess.run([sys.executable, '-m', 'venv', str(venv_path)], check=True)
+
+            # 修改4: 获取正确的Python路径
+            venv_python = str(venv_path / 'bin' / 'python') 
+
+            # 安装系统依赖
+            if detect_os() == 'linux':
+                print("🛠 安装系统依赖...")
+                subprocess.run(['sudo', 'apt-get', 'update', '-qq'], check=True)
+                subprocess.run(['sudo', 'apt-get', 'install', '-y', 
+                              'python3-dev', 'python3-venv', 'libssl-dev',
+                              'build-essential', 'pkg-config', 'curl'], check=True)
+            
+            # 安装Rust
+            print("🦀 安装Rust工具链...")
+            rust_install = subprocess.run(
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            if rust_install.returncode != 0:
+                print(f"❌ Rust安装失败: {rust_install.stderr}")
+                sys.exit(1)
+                
+            # 设置环境变量
+            os.environ["PATH"] = f"{os.environ['PATH']}:{str(Path.home() / '.cargo/bin')}"
+            
+            # 安装Python依赖
+            print("📦 安装Python依赖...")
+            subprocess.run(
+                [venv_python, '-m', 'pip', 'install', '-q', '--upgrade', 'pip'],
+                check=True
+            )
+            subprocess.run([
+                venv_python, '-m', 'pip', 'install', '-q',
+                'setuptools-rust==1.7.0',
+                'construct==2.10.68',
+                'base58==2.1.1',
+                'PyNaCl==1.5.0',
+                'solana==0.25.1',
+                'solders'
+            ], check=True)
+            
+            # 重启程序
+            print("✅ 环境配置完成！正在重启程序...")
+            os.execl(venv_python, venv_python, *sys.argv)
+            
+        except Exception as e:
+            print(f"❌ 自动安装失败: {str(e)}")
+            sys.exit(1)
+
+    # 检查Python包依赖
+    required_packages = {'requests', 'solders', 'solana'}
     installed_packages = {dist.metadata['Name'] for dist in distributions()}
     
-    all_installed = True
-    for package, pip_name in required_packages.items():
-        if package.replace('-', '_') not in installed_packages:
-            print(f"缺少依赖库: {package}")
-            if not install_package(pip_name):
-                all_installed = False
-    
-    if not all_installed:
-        print("\n某些依赖库安装失败。")
-        print("请手动运行以下命令安装依赖：")
-        print(f"python -m pip install --upgrade {' '.join(required_packages.values())}")
-        sys.exit(1)
-    else:
-        print("\n所有依赖库已准备就绪！")
+    # 自动安装缺失包
+    for pkg in required_packages - installed_packages:
+        install_package(pkg)
 
-# 在导入其他库之前先检查依赖
-print("检查程序依赖...")
+# 在脚本开始时调用依赖检查
 check_and_install_dependencies()
 
-from solders.pubkey import Pubkey
-from solana.rpc.api import Client
-from solana.rpc.commitment import Commitment
+# 检查依赖
+# print("检查程序依赖...")
+# check_and_install_dependencies()
+
+try:
+    # 尝试导入 solana 相关库
+    from solders.pubkey import Pubkey
+    from solana.rpc.api import Client
+    from solana.rpc.commitment import Commitment
+    print("✅ Solana 库导入成功")
+except ImportError as e:
+    print(f"❌ Solana 库导入失败: {str(e)}")
+    print("\n尝试重新安装依赖:")
+    print("""
+# 创建虚拟环境
+python3 -m venv venv
+source venv/bin/activate
+
+# 安装依赖
+pip install construct>=2.10.68
+pip install base58>=2.1.1
+pip install PyNaCl>=1.4.0
+pip install solana==0.25.1
+pip install solders
+""")
+    # sys.exit(1) # Remove the exit call, as the installation is handled above
 
 class TokenPlatformAnalyzer:
     """代币平台分析器"""
@@ -370,71 +522,54 @@ class ContractAnalyzer:
     def __init__(self):
         """初始化分析器，使用公共RPC节点"""
         self.rpc_endpoints = [
-            # Solana Foundation
+            # 添加你的HTTP节点
+            "http://your-http-node-1:8899",
+            "http://your-http-node-2:8899",
+            # 保留一些公共节点作为备用
             "https://api.mainnet-beta.solana.com",
-            # dRPC
-            "https://solana.drpc.org/",
-            # GetBlock
-            "https://go.getblock.io/4136d34f90a6488b84214ae26f0ed5f4",
-            # Allnodes
-            "https://solana-rpc.publicnode.com",
-            # BlockEden.xyz
-            "https://api.blockeden.xyz/solana/67nCBdZQSH9z3YqDDjdm",
-            # LeoRPC
-            "https://solana.leorpc.com/?api_key=FREE",
-            # OMNIA
-            "https://endpoints.omniatech.io/v1/sol/mainnet/public",
-            # OnFinality
-            "https://solana.api.onfinality.io/public",
-            # 其他备用节点
-            "https://solana-api.projectserum.com",
-            "https://rpc.ankr.com/solana",
-            "https://solana-mainnet.rpc.extrnode.com",
-            "https://solana.public-rpc.com",
-            "https://mainnet.rpcpool.com",
-            "https://free.rpcpool.com",
+            "https://rpc.ankr.com/solana"
         ]
         self.client = None
+        self.api_keys = load_api_keys()  # 加载保存的API密钥
         self.connect_to_best_rpc()
         
     def connect_to_best_rpc(self):
         """连接到响应最快的RPC节点"""
         print("\n正在尝试连接RPC节点...")
-        
-        # 根据系统设置不同超时
-        os_type = detect_os()
-        timeout = 15 if os_type == 'windows' else 10
-        
-        # 更新后的RPC节点列表
-        self.rpc_endpoints = [
-            "https://api.mainnet-beta.solana.com",
-            "https://rpc.ankr.com/solana",
-            "https://solana-api.projectserum.com",
-            "https://solana.chainstacklabs.com",
-            "https://solana-mainnet.rpc.extrnode.com"
-        ]
+        timeout = 30  # 统一设置更长的超时时间
         
         for endpoint in self.rpc_endpoints:
             try:
                 print(f"尝试连接: {endpoint}")
-                temp_client = Client(endpoint, timeout=timeout)
                 
-                # Windows系统禁用代理
-                if os_type == 'windows':
-                    temp_client._client.proxies = {}  # type: ignore
+                # 在测试节点可用性时添加更完整的请求头
+                headers = {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                # 测试节点可用性
+                response = requests.post(
+                    endpoint, 
+                    json={"jsonrpc": "2.0", "id": 1, "method": "getHealth"},
+                    headers=headers,
+                    timeout=timeout
+                )
+                
+                if response.status_code != 200:
+                    print(f"❌ 端点响应异常: {response.status_code}")
+                    continue
+                    
+                # 初始化客户端
+                self.client = Client(endpoint, timeout=timeout)
                 
                 # 测试连接
-                try:
-                    slot = temp_client.get_slot()
-                    print(f"✅ 连接成功! 当前slot: {slot}")
-                    self.client = temp_client
-                    return
-                except Exception as e:
-                    print(f"❌ 连接测试失败: {str(e)}")
-                    continue
+                slot = self.client.get_slot()
+                print(f"✅ 连接成功! 当前slot: {slot}")
+                return
                 
             except Exception as e:
-                print(f"❌ 初始化失败: {str(e)}")
+                print(f"❌ 连接失败: {str(e)}")
                 continue
         
         raise Exception("无法连接到任何RPC节点，请检查网络连接或稍后重试")
@@ -475,96 +610,79 @@ class ContractAnalyzer:
 
     def get_program_info(self, contract_address: str) -> dict:
         """获取合约详细信息"""
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                if not self.client:
-                    self.connect_to_best_rpc()
-                
-                pubkey = Pubkey.from_string(contract_address)
-                
-                # 获取账户信息
-                account_info = self.client.get_account_info(pubkey)
-                if not account_info.value:
-                    return {"error": "未找到合约账户"}
-                
-                account_data = account_info.value
-                
-                # 获取最近的交易记录
-                recent_txs = self.client.get_signatures_for_address(
-                    pubkey, 
-                    limit=10
-                ).value
-                
-                # 获取合约源代码
-                contract_source = self.get_contract_source(contract_address)
-                
-                # 获取字节码（如果没有源代码）
-                bytecode = None if contract_source else self.get_contract_bytecode(contract_address)
-                
-                # 获取关联的代币账户
-                try:
-                    token_accounts = self.client.get_token_accounts_by_owner(
-                        pubkey,
-                        {"programId": Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")}
-                    )
-                except Exception as e:
-                    print(f"获取代币账户时出错: {str(e)}")
-                    token_accounts = []
-                
-                # 基本信息
-                info = {
-                    "合约地址": str(pubkey),
-                    "程序所有者": str(account_data.owner),
-                    "账户余额": account_data.lamports / 10**9,  # 转换为 SOL
-                    "是否可执行": account_data.executable,
-                    "数据大小": len(account_data.data) if account_data.data else 0,
-                    "最近交易数量": len(recent_txs),
-                    "源代码": contract_source,
-                    "字节码": bytecode,
-                    "关联代币账户": [
-                        {
-                            "地址": str(account.pubkey),
-                            "数据": base64.b64encode(account.account.data).decode('utf-8')
-                        } for account in token_accounts
-                    ] if token_accounts else [],
-                    "最近交易": [
-                        {
-                            "签名": tx.signature,
-                            "时间": datetime.fromtimestamp(tx.block_time).strftime("%Y-%m-%d %H:%M:%S") if tx.block_time else "未知",
-                            "状态": "成功" if not tx.err else "失败"
-                        } for tx in recent_txs
-                    ]
-                }
-                
-                # 分析可能的发币平台
-                platform_analysis = TokenPlatformAnalyzer.analyze_platform(info)
-                if platform_analysis:
-                    info["发币平台分析"] = platform_analysis
-                
-                # 添加漏洞分析
-                vulnerabilities = VulnerabilityAnalyzer.analyze_vulnerabilities(info)
-                security_score = VulnerabilityAnalyzer.analyze_security_score(info)
-                
-                info.update({
-                    "漏洞分析": vulnerabilities,
-                    "安全评分": security_score
-                })
-                
-                return info
-                
-            except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"\n连接失败，正在进行第 {retry_count + 1} 次重试...")
-                    try:
-                        self.connect_to_best_rpc()  # 重新连接RPC
-                    except:
-                        continue
-                else:
-                    return {"error": f"分析出错 (已重试{max_retries}次): {str(e)}"}
+        try:
+            if not self.client:
+                self.connect_to_best_rpc()
+            
+            pubkey = Pubkey.from_string(contract_address)
+            
+            # 获取账户信息
+            account_info = self.client.get_account_info(pubkey)
+            if not account_info.value:
+                return {"error": "未找到合约账户"}
+            
+            account_data = account_info.value
+            
+            # 获取最近的交易记录
+            recent_txs = self.client.get_signatures_for_address(
+                pubkey, 
+                limit=10
+            ).value
+            
+            # 获取合约源代码
+            contract_source = self.get_contract_source(contract_address)
+            
+            # 获取字节码（如果没有源代码）
+            bytecode = None if contract_source else self.get_contract_bytecode(contract_address)
+            
+            # 获取关联的代币账户
+            token_accounts = self.get_token_accounts_by_owner(contract_address)
+            
+            # 基本信息
+            info = {
+                "合约地址": str(pubkey),
+                "程序所有者": str(account_data.owner),
+                "账户余额": account_data.lamports / 10**9,  # 转换为 SOL
+                "是否可执行": account_data.executable,
+                "数据大小": len(account_data.data) if account_data.data else 0,
+                "最近交易数量": len(recent_txs),
+                "源代码": contract_source,
+                "字节码": bytecode,
+                "关联代币账户": [
+                    {
+                        "地址": str(account["pubkey"]),
+                        "数据": account["data"]
+                    } for account in token_accounts
+                ] if token_accounts else [],
+                "最近交易": [
+                    {
+                        "签名": tx.signature,
+                        "时间": datetime.fromtimestamp(tx.block_time).strftime("%Y-%m-%d %H:%M:%S") if tx.block_time else "未知",
+                        "状态": "成功" if not tx.err else "失败"
+                    } for tx in recent_txs
+                ]
+            }
+            
+            # 分析可能的发币平台
+            platform_analysis = TokenPlatformAnalyzer.analyze_platform(info)
+            if platform_analysis:
+                info["发币平台分析"] = platform_analysis
+            
+            # 添加漏洞分析
+            vulnerabilities = VulnerabilityAnalyzer.analyze_vulnerabilities(info)
+            security_score = VulnerabilityAnalyzer.analyze_security_score(info)
+            
+            info.update({
+                "漏洞分析": vulnerabilities,
+                "安全评分": security_score
+            })
+            
+            return info
+            
+        except Exception as e:
+            print(f"\n获取合约信息时出错: {str(e)}")
+            print(f"错误类型: {type(e)}")
+            return {"error": f"分析失败: {str(e)}"}
 
     def analyze_transaction_patterns(self, transactions: list) -> dict:
         """分析交易模式和风险"""
@@ -627,442 +745,186 @@ class ContractAnalyzer:
             return timestamp
 
     def generate_report(self, contract_address: str) -> str:
-        """生成详细分析报告"""
-        start_time = datetime.now()
-        info = self.get_program_info(contract_address)
-        analysis_time = (datetime.now() - start_time).total_seconds()
-        
-        if "error" in info:
-            return f"错误: {info['error']}"
-        
-        # 获取统计信息
-        stats = get_stats(info)
-        
-        report = [
-            "=" * 50,
-            "🔍 Solana 合约分析报告",
-            "=" * 50,
-            f"📅 生成时间: {(datetime.now() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)",
-            f"⏱️ 分析耗时: {analysis_time:.2f}秒",
+        """生成分析报告"""
+        try:
+            info = self.get_program_info(contract_address)
+            if "error" in info:
+                return f"❌ 分析失败: {info['error']}"
             
-            "\n📋 基本信息:",
-            f"📍 合约地址: {info['合约地址']}",
-            f"👤 程序所有者: {info['程序所有者']}",
-            f"💰 账户余额: {info['账户余额']} SOL",
-            f"⚙️ 是否可执行: {'是' if info['是否可执行'] else '否'}",
-            f"📦 数据大小: {info['数据大小']} 字节",
+            # 生成报告内容
+            report = [
+                "=" * 50,
+                "🔍 Solana 合约分析报告",
+                "=" * 50,
+                f"📅 生成时间: {(datetime.now() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)",
+                f"⏱️ 分析耗时: {(datetime.now() - datetime.now()).total_seconds():.2f}秒",
+                
+                "\n📋 基本信息:",
+                f"📍 合约地址: {info['合约地址']}",
+                f"👤 程序所有者: {info['程序所有者']}",
+                f"💰 账户余额: {info['账户余额']} SOL",
+                f"⚙️ 是否可执行: {'是' if info['是否可执行'] else '否'}",
+                f"📦 数据大小: {info['数据大小']} 字节",
+                
+                "\n📊 统计信息:",
+                f"总交易数: {get_stats(info)['交易总数']}",
+                f"漏洞总数: {sum(get_stats(info).values())}",
+                "漏洞分布:",
+                f"  {get_risk_level_icon('high_risk')} 高风险: {get_stats(info)['高风险漏洞数']}",
+                f"  {get_risk_level_icon('medium_risk')} 中风险: {get_stats(info)['中风险漏洞数']}",
+                f"  {get_risk_level_icon('low_risk')} 低风险: {get_stats(info)['低风险漏洞数']}"
+            ]
             
-            "\n📊 统计信息:",
-            f"总交易数: {stats['交易总数']}",
-            f"漏洞总数: {sum(stats.values())}",
-            "漏洞分布:",
-            f"  {get_risk_level_icon('high_risk')} 高风险: {stats['高风险漏洞数']}",
-            f"  {get_risk_level_icon('medium_risk')} 中风险: {stats['中风险漏洞数']}",
-            f"  {get_risk_level_icon('low_risk')} 低风险: {stats['低风险漏洞数']}"
-        ]
-        
-        # 添加发币平台分析结果
-        if "发币平台分析" in info:
-            platform_analysis = info["发币平台分析"]
-            report.append("\n🏢 发币平台分析:")
+            # 添加发币平台分析结果
+            if "发币平台分析" in info:
+                platform_analysis = info["发币平台分析"]
+                report.append("\n🏢 发币平台分析:")
+                
+                # 显示预警信息
+                if platform_analysis.get("warnings"):
+                    report.append("\n⚠️ 重要预警:")
+                    for warning in platform_analysis["warnings"]:
+                        report.append(f"- {warning['message']}")
+                
+                # 显示平台信息
+                for plat in platform_analysis.get("platforms", []):
+                    report.extend([
+                        f"\n可能的平台: {plat['platform_name']}",
+                        f"置信度: {plat['confidence']*100:.1f}%",
+                        "原因:"
+                    ])
+                    for reason in plat['reasons']:
+                        report.append(f"  ✓ {reason}")
             
-            # 显示预警信息
-            if platform_analysis.get("warnings"):
-                report.append("\n⚠️ 重要预警:")
-                for warning in platform_analysis["warnings"]:
-                    report.append(f"- {warning['message']}")
-            
-            # 显示平台信息
-            for plat in platform_analysis.get("platforms", []):
+            # 添加合约代码信息
+            report.append("\n📜 合约代码:")
+            if info['源代码']:
                 report.extend([
-                    f"\n可能的平台: {plat['platform_name']}",
-                    f"置信度: {plat['confidence']*100:.1f}%",
-                    "原因:"
+                    "源代码:",
+                    json.dumps(info['源代码'], indent=2, ensure_ascii=False)
                 ])
-                for reason in plat['reasons']:
-                    report.append(f"  ✓ {reason}")
-        
-        # 添加合约代码信息
-        report.append("\n📜 合约代码:")
-        if info['源代码']:
-            report.extend([
-                "源代码:",
-                json.dumps(info['源代码'], indent=2, ensure_ascii=False)
-            ])
-        elif info['字节码']:
-            report.extend([
-                "字节码:",
-                info['字节码'],
-                "\n🔍 字节码解析结果:"
-            ])
-            # 解析字节码
-            bytecode_info = self.decode_token_bytecode(info['字节码'])
-            if "error" not in bytecode_info:
-                # 计算实际供应量
-                supply = bytecode_info['总供应量']
-                decimals = bytecode_info['代币精度']
-                actual_supply = supply / (10 ** decimals)
-                
+            elif info['字节码']:
                 report.extend([
-                    f"📊 代币精度: {decimals}",
-                    f"💰 原始供应量: {supply}",
-                    f"💎 实际流通量: {actual_supply:,.2f} (考虑精度后)",
-                    f"✅ 初始化状态: {'已初始化' if bytecode_info['是否已初始化'] else '未初始化'}",
-                    f"🔑 铸币权限: {bytecode_info['铸币权限']}",
-                    f"❄️ 冻结权限: {bytecode_info['冻结权限']}"
+                    "字节码:",
+                    info['字节码'],
+                    "\n🔍 字节码解析结果:"
                 ])
-                
-                # 添加权限分析
-                report.append("\n⚠️ 权限风险分析:")
-                if bytecode_info['铸币权限'] != "0" * 64:
-                    report.append("- ⚠️ 警告: 合约保留铸币权限,存在增发风险")
-                else:
-                    report.append("- ✅ 铸币权限已禁用,无增发风险")
+                # 解析字节码
+                bytecode_info = self.decode_token_bytecode(info['字节码'])
+                if "error" not in bytecode_info:
+                    # 计算实际供应量
+                    supply = bytecode_info['总供应量']
+                    decimals = bytecode_info['代币精度']
+                    actual_supply = supply / (10 ** decimals)
                     
-                if bytecode_info['冻结权限'] != "0" * 64:
-                    report.append("- ⚠️ 警告: 合约保留冻结权限,可能限制代币转账")
-                else:
-                    report.append("- ✅ 冻结权限已禁用,转账不受限制")
-            else:
-                report.append(f"❌ {bytecode_info['error']}")
-        else:
-            report.append("❌ 未能获取合约代码")
-        
-        # 添加交易记录分析
-        report.append("\n📜 最近交易记录分析:")
-        tx_analysis = self.analyze_transaction_patterns(info['最近交易'])
-        
-        report.extend([
-            f"📊 交易统计:",
-            f"  • 总交易数: {tx_analysis['交易统计']['总交易数']}",
-            f"  • 成功交易: {tx_analysis['交易统计']['成功交易']}",
-            f"  • 失败交易: {tx_analysis['交易统计']['失败交易']}",
-            f"\n⏰ 时间分析 (UTC+8):",
-            f"  • 最早交易: {self.convert_to_utc8(tx_analysis['时间模式']['最早交易'])}",
-            f"  • 最近交易: {self.convert_to_utc8(tx_analysis['时间模式']['最近交易'])}"
-        ])
-        
-        if tx_analysis['风险提示']:
-            report.append("\n⚠️ 交易风险提示:")
-            for warning in tx_analysis['风险提示']:
-                report.append(f"  • {warning}")
-        
-        # 添加详细交易记录
-        report.append("\n📜 详细交易记录:")
-        for tx in info['最近交易']:
-            report.extend([
-                f"- 签名: {tx['签名']}",
-                f"  ⏰ 时间: {self.convert_to_utc8(tx['时间'])} (UTC+8)",
-                f"  状态: {'✅ 成功' if tx['状态'] == '成功' else '❌ 失败'}"
-            ])
-        
-        # 添加安全分析
-        security_analysis = VulnerabilityAnalyzer.analyze_security_score(info)
-        report.extend([
-            "\n🛡️ 安全分析:",
-            f"安全评分: {security_analysis['score']:.1f}/100.0 ({security_analysis['risk_level']})",
-            "\n扣分详情:"
-        ])
-
-        for reason, points in security_analysis['deductions']:
-            report.append(f"  • {reason}: -{points}分")
-        
-        # 添加安全建议
-        suggestions = generate_security_suggestions(info)
-        if suggestions:
-            report.extend([
-                "\n💡 安全建议:",
-                *suggestions
-            ])
-        
-        report.append("\n" + "=" * 50)
-        report.append("🏁 报告结束")
-        report.append("=" * 50)
-        
-        return "\n".join(report)
-
-    def get_token_info(self, token_address: str) -> dict:
-        """获取代币详细信息"""
-        try:
-            pubkey = Pubkey.from_string(token_address)
-            
-            # 获取代币信息
-            token_info = self.client.get_account_info(pubkey)
-            if not token_info.value:
-                return {"error": "未找到代币账户"}
-            
-            # 获取代币持有者
-            token_holders = []
-            try:
-                holders_info = self.client.get_token_largest_accounts(pubkey)
-                if holders_info.value:
-                    token_holders = [
-                        {
-                            "地址": str(holder.address),
-                            "数量": holder.amount,
-                            "是否冻结": holder.frozen
-                        } for holder in holders_info.value
-                    ]
-            except Exception as e:
-                print(f"获取持有者信息失败: {str(e)}")
-            
-            # 获取代币最近交易
-            recent_txs = []
-            try:
-                tx_info = self.client.get_signatures_for_address(pubkey, limit=10)
-                if tx_info.value:
-                    recent_txs = [
-                        {
-                            "签名": tx.signature,
-                            "时间": datetime.fromtimestamp(tx.block_time).strftime("%Y-%m-%d %H:%M:%S") if tx.block_time else "未知",
-                            "状态": "成功" if not tx.err else "失败"
-                        } for tx in tx_info.value
-                    ]
-            except Exception as e:
-                print(f"获取交易历史失败: {str(e)}")
-            
-            return {
-                "地址": str(pubkey),
-                "持有者": token_holders,
-                "最近交易": recent_txs,
-                "数据大小": len(token_info.value.data) if token_info.value.data else 0,
-                "所有者": str(token_info.value.owner) if token_info else "未知"
-            }
-            
-        except Exception as e:
-            return {"error": f"获取代币信息失败: {str(e)}"}
-
-    def analyze_token_relationships(self, contract_address: str) -> dict:
-        try:
-            print("开始分析代币关系...")
-            pubkey = Pubkey.from_string(contract_address)
-            
-            # 首先获取合约基本信息
-            contract_info = self.get_program_info(contract_address)
-            if "error" in contract_info:
-                return {"error": f"获取合约信息失败: {contract_info['error']}"}
-            
-            relationships = {
-                "合约信息": {
-                    "地址": contract_address,
-                    "创建者": contract_info.get('程序所有者'),
-                    "类型": "主合约"
-                },
-                "关联代币": [],
-                "关联合约": [],
-                "交互地址": [],
-                "风险关联": []
-            }
-
-            # 1. 修改交易解析逻辑
-            try:
-                recent_txs = contract_info.get('最近交易', [])
-                interacted_addresses = set()
-                
-                for tx in recent_txs:
-                    try:
-                        # 修改交易获取方式
-                        tx_info = self.client.get_transaction(
-                            tx['签名'],
-                            commitment=Commitment("confirmed"),
-                            max_supported_transaction_version=0
-                        )
-                        if tx_info.value:
-                            # 使用更健壮的账户提取方式
-                            transaction_json = tx_info.value.to_json()
-                            account_keys = transaction_json.get('result', {}).get('transaction', {}).get('message', {}).get('accountKeys', [])
-                            
-                            for account in account_keys:
-                                addr = str(account)
-                                if addr != contract_address:
-                                    interacted_addresses.add(addr)
-                    except Exception as e:
-                        print(f"处理交易 {tx['签名']} 时出错: {str(e)}")
-                        continue
-
-            except Exception as e:  # 添加异常处理
-                print(f"交易解析失败: {str(e)}")
-
-            # 2. 修改代币账户解析部分
-            try:
-                token_accounts = self.client.get_token_accounts_by_owner(
-                    pubkey,
-                    {"programId": Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")}
-                )
-                
-                if token_accounts and hasattr(token_accounts, 'value'):
-                    for account in token_accounts.value:
-                        try:
-                            # 使用更安全的字节码解析方式
-                            if hasattr(account.account.data, 'parsed'):
-                                mint_address = account.account.data.parsed['info']['mint']
-                            else:
-                                raw_data = base64.b64decode(account.account.data)
-                                mint_address = str(Pubkey.from_bytes(raw_data[:32]))
-                                
-                            token_info = self.get_token_info(mint_address)
-                            if "error" not in token_info:
-                                relationships["关联代币"].append({
-                                    "代币地址": mint_address,
-                                    "账户地址": str(account.pubkey),
-                                    "持有者数量": len(token_info.get("持有者", [])),
-                                    "持有者": token_info.get("持有者", [])[:5],
-                                    "最近交易": token_info.get("最近交易", [])[:3]
-                                })
-                        except Exception as e:
-                            print(f"分析代币账户时出错: {str(e)}")
-                            continue
-
-            except Exception as e:  # 添加异常处理
-                print(f"代币账户解析失败: {str(e)}")
-
-            # 3. 修改相似合约分析部分
-            try:
-                if contract_info.get('字节码'):
-                    # 添加分页和过滤条件
-                    similar_programs = self.client.get_program_accounts(
-                        Pubkey.from_string("BPFLoaderUpgradeab1e11111111111111111111111"),
-                        filters=[{"dataSize": len(contract_info['字节码'])}]
-                    )
+                    report.extend([
+                        f"📊 代币精度: {decimals}",
+                        f"💰 原始供应量: {supply}",
+                        f"💎 实际流通量: {actual_supply:,.2f} (考虑精度后)",
+                        f"✅ 初始化状态: {'已初始化' if bytecode_info['是否已初始化'] else '未初始化'}",
+                        f"🔑 铸币权限: {bytecode_info['铸币权限']}",
+                        f"❄️ 冻结权限: {bytecode_info['冻结权限']}"
+                    ])
                     
-                    if similar_programs.value:
-                        for program in similar_programs.value:
-                            if str(program.pubkey) != contract_address:
-                                try:
-                                    program_info = self.get_program_info(str(program.pubkey))
-                                    if "error" not in program_info and program_info.get('字节码'):
-                                        # 直接比较字节码
-                                        similarity = self.calculate_bytecode_similarity(
-                                            contract_info['字节码'],
-                                            program_info['字节码']
-                                        )
-                                        
-                                        if similarity > 0.8:
-                                            relationships["关联合约"].append({
-                                                "合约地址": str(program.pubkey),
-                                                "相似度": similarity,
-                                                "创建者": program_info.get('程序所有者'),
-                                                "安全评分": program_info.get("安全评分", {}).get("score", 0)
-                                            })
-                                except Exception as e:
-                                    print(f"分析合约 {program.pubkey} 时出错: {str(e)}")
-                                    continue
-                                    
-            except Exception as e:
-                print(f"分析相似合约时出错: {str(e)}")
-
-            # 更新统计信息
-            relationships["统计信息"] = {
-                "关联代币数量": len(relationships["关联代币"]),
-                "交互地址数量": len(relationships["交互地址"]),
-                "相似合约数量": len(relationships["关联合约"]),
-                "风险关联数量": len(relationships["风险关联"]),
-                "分析时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            print(f"合约基本信息获取成功: {contract_info.get('程序所有者')}")
-            print(f"开始分析最近 {len(contract_info.get('最近交易', []))} 笔交易...")
-            # ... 交易分析代码 ...
-            
-            print(f"交易分析完成，发现 {len(interacted_addresses)} 个交互地址")
-            print("开始分析代币账户...")
-            # ... 代币分析代码 ...
-            
-            print("开始分析相似合约...")
-            # ... 相似合约分析代码 ...
-            
-            print("分析完成")
-            return relationships
-            
-        except Exception as e:
-            print(f"详细错误: {str(e)}")
-            print(f"错误类型: {type(e)}")
-            print(f"错误位置: {e.__traceback__.tb_frame.f_code.co_name}")
-            return {"error": f"分析代币关系失败: {str(e)}"}
-
-    def calculate_bytecode_similarity(self, bytecode1: str, bytecode2: str) -> float:
-        """计算两个字节码的相似度"""
-        try:
-            if not bytecode1 or not bytecode2:
-                return 0.0
-            
-            # 解码base64
-            data1 = base64.b64decode(bytecode1)
-            data2 = base64.b64decode(bytecode2)
-            
-            # 计算最长公共子序列
-            len1, len2 = len(data1), len(data2)
-            matrix = [[0] * (len2 + 1) for _ in range(len1 + 1)]
-            
-            for i in range(1, len1 + 1):
-                for j in range(1, len2 + 1):
-                    if data1[i-1] == data2[j-1]:
-                        matrix[i][j] = matrix[i-1][j-1] + 1
+                    # 添加权限分析
+                    report.append("\n⚠️ 权限风险分析:")
+                    if bytecode_info['铸币权限'] != "0" * 64:
+                        report.append("- ⚠️ 警告: 合约保留铸币权限,存在增发风险")
                     else:
-                        matrix[i][j] = max(matrix[i-1][j], matrix[i][j-1])
+                        report.append("- ✅ 铸币权限已禁用,无增发风险")
+                        
+                    if bytecode_info['冻结权限'] != "0" * 64:
+                        report.append("- ⚠️ 警告: 合约保留冻结权限,可能限制代币转账")
+                    else:
+                        report.append("- ✅ 冻结权限已禁用,转账不受限制")
+                else:
+                    report.append(f"❌ {bytecode_info['error']}")
+            else:
+                report.append("❌ 未能获取合约代码")
             
-            # 计算相似度
-            lcs_length = matrix[len1][len2]
-            similarity = (2.0 * lcs_length) / (len1 + len2)
+            # 添加交易记录分析
+            report.append("\n📜 最近交易记录分析:")
+            tx_analysis = self.analyze_transaction_patterns(info['最近交易'])
             
-            return similarity
+            report.extend([
+                f"📊 交易统计:",
+                f"  • 总交易数: {tx_analysis['交易统计']['总交易数']}",
+                f"  • 成功交易: {tx_analysis['交易统计']['成功交易']}",
+                f"  • 失败交易: {tx_analysis['交易统计']['失败交易']}",
+                f"\n⏰ 时间分析 (UTC+8):",
+                f"  • 最早交易: {self.convert_to_utc8(tx_analysis['时间模式']['最早交易'])}",
+                f"  • 最近交易: {self.convert_to_utc8(tx_analysis['时间模式']['最近交易'])}"
+            ])
+            
+            if tx_analysis['风险提示']:
+                report.append("\n⚠️ 交易风险提示:")
+                for warning in tx_analysis['风险提示']:
+                    report.append(f"  • {warning}")
+            
+            # 添加详细交易记录
+            report.append("\n📜 详细交易记录:")
+            for tx in info['最近交易']:
+                report.extend([
+                    f"- 签名: {tx['签名']}",
+                    f"  ⏰ 时间: {self.convert_to_utc8(tx['时间'])} (UTC+8)",
+                    f"  状态: {'✅ 成功' if tx['状态'] == '成功' else '❌ 失败'}"
+                ])
+            
+            # 添加安全分析
+            security_analysis = VulnerabilityAnalyzer.analyze_security_score(info)
+            report.extend([
+                "\n🛡️ 安全分析:",
+                f"安全评分: {security_analysis['score']:.1f}/100.0 ({security_analysis['risk_level']})",
+                "\n扣分详情:"
+            ])
+            
+            for reason, points in security_analysis['deductions']:
+                report.append(f"  • {reason}: -{points}分")
+            
+            # 添加安全建议
+            suggestions = generate_security_suggestions(info)
+            if suggestions:
+                report.extend([
+                    "\n💡 安全建议:",
+                    *suggestions
+                ])
+            
+            report.append("\n" + "=" * 50)
+            report.append("🏁 报告结束")
+            report.append("=" * 50)
+            
+            return "\n".join(report)
             
         except Exception as e:
-            print(f"计算字节码相似度时出错: {str(e)}")
-            return 0.0
+            return f"生成报告失败: {str(e)}"
 
-    def check_address_risk(self, address: str) -> dict:
-        """检查地址风险"""
+    def get_token_accounts_by_owner(self, pubkey: str) -> list:
+        """获取代币账户信息的优化版本"""
         try:
-            # 1. 检查是否在已知风险地址列表中
-            risk_addresses = {
-                "高风险": ["已知黑客地址", "诈骗地址"],
-                "中风险": ["可疑地址", "高频交易地址"],
-                "低风险": []
-            }
+            token_accounts = self.client.get_token_accounts_by_owner(
+                Pubkey.from_string(pubkey),
+                {"programId": Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")}
+            )
             
-            # 2. 分析地址行为模式
-            addr_info = self.get_program_info(address)
-            if "error" not in addr_info:
-                recent_txs = addr_info.get("最近交易", [])
-                
-                # 检查交易模式
-                if len(recent_txs) >= 3:
-                    # 检查高频交易
-                    tx_times = [datetime.strptime(tx["时间"], "%Y-%m-%d %H:%M:%S") 
-                              for tx in recent_txs]
-                    time_diffs = [(tx_times[i] - tx_times[i+1]).total_seconds() 
-                                for i in range(len(tx_times)-1)]
-                    
-                    if any(diff < 1 for diff in time_diffs):
-                        return {
-                            "风险等级": "中风险",
-                            "描述": "发现高频交易行为",
-                            "类型": "可疑交易模式"
-                        }
-                
-                # 检查失败率
-                failed_txs = sum(1 for tx in recent_txs if tx["状态"] == "失败")
-                if failed_txs / len(recent_txs) > 0.5:
-                    return {
-                        "风险等级": "中风险",
-                        "描述": "高交易失败率",
-                        "类型": "异常交易模式"
+            if not token_accounts or not hasattr(token_accounts, 'value'):
+                return []
+            
+            result = []
+            for account in token_accounts.value:
+                try:
+                    account_data = {
+                        "pubkey": str(account.pubkey),
+                        "data": base64.b64encode(account.account.data).decode('utf-8') if account.account.data else None
                     }
-            
-            return {
-                "风险等级": "低",
-                "描述": "未发现明显风险",
-                "类型": "正常地址"
-            }
-            
+                    result.append(account_data)
+                except Exception as e:
+                    print(f"处理代币账户数据时出错: {str(e)}")
+                    continue
+                
+            return result
         except Exception as e:
-            print(f"检查地址风险时出错: {str(e)}")
-            return {
-                "风险等级": "未知",
-                "描述": f"风险分析失败: {str(e)}",
-                "类型": "分析错误"
-            }
+            print(f"获取代币账户列表时出错: {str(e)}")
+            return []
 
     def decode_token_bytecode(self, bytecode: str) -> dict:
         """解析代币字节码"""
@@ -1090,6 +952,181 @@ class ContractAnalyzer:
             }
         except Exception as e:
             return {"error": f"字节码解析失败: {str(e)}"}
+
+    def get_all_transactions(self, contract_address: str) -> list:
+        """获取合约的所有交易记录"""
+        try:
+            all_txs = []
+            limit = 100
+            offset = 0
+            
+            # 获取API密钥
+            api_key = self.api_keys.get('solscan') if hasattr(self, 'api_keys') else None
+            if not api_key:
+                print("⚠️ 未设置Solscan API密钥，请先在API管理中添加密钥")
+                return []
+            
+            print("\n正在从Solscan获取历史交易记录...")
+            
+            while True:
+                # 使用Solscan API获取交易
+                url = f"https://public-api.solscan.io/account/transactions"
+                params = {
+                    "account": contract_address,
+                    "limit": limit,
+                    "offset": offset
+                }
+                headers = {
+                    "token": api_key,
+                    "Accept": "application/json"
+                }
+                
+                # 处理API限制
+                if response.status_code == 429:
+                    print("⚠️ API请求达到限制，等待5秒后重试...")
+                    time.sleep(5)
+                    continue
+                
+                if response.status_code != 200:
+                    print(f"❌ API请求失败: {response.status_code}")
+                    print(f"响应内容: {response.text}")
+                    break
+                    
+                transactions = response.json()
+                if not transactions or len(transactions) == 0:
+                    break
+                    
+                for tx in transactions:
+                    try:
+                        # 解析交易详情
+                        tx_data = {
+                            "签名": tx.get("signature", ""),
+                            "时间": datetime.fromtimestamp(tx.get("blockTime", 0)).strftime("%Y-%m-%d %H:%M:%S"),
+                            "状态": "成功" if tx.get("status") == "Success" else "失败",
+                            "区块": tx.get("slot"),
+                            "手续费": float(tx.get("fee", 0)) / 10**9,
+                            "交互账户": [],
+                            "指令数": len(tx.get("instructions", [])),
+                            "交易类型": []
+                        }
+                        
+                        # 获取交互账户
+                        if "accounts" in tx:
+                            tx_data["交互账户"] = tx["accounts"]
+                        
+                        # 获取交易类型
+                        if "instructions" in tx:
+                            for inst in tx["instructions"]:
+                                if "programId" in inst:
+                                    tx_data["交易类型"].append(inst["programId"])
+                        
+                        all_txs.append(tx_data)
+                        print(f"✅ 已获取交易: {tx_data['签名'][:20]}...")
+                        
+                    except Exception as e:
+                        print(f"处理交易详情失败: {str(e)}")
+                        continue
+                
+                print(f"已获取 {len(all_txs)} 笔交易...")
+                
+                # 如果返回的交易数小于limit，说明已经到最后一页
+                if len(transactions) < limit:
+                    break
+                    
+                offset += limit
+                
+            return all_txs
+            
+        except Exception as e:
+            print(f"获取交易记录失败: {str(e)}")
+            return []
+
+    def generate_transaction_report(self, contract_address: str) -> str:
+        """生成交易分析报告"""
+        try:
+            print("\n开始生成交易分析报告...")
+            all_txs = self.get_all_transactions(contract_address)
+            
+            report = [
+                "=" * 50,
+                "🔍 Solana 合约交易分析报告",
+                "=" * 50,
+                f"📅 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)",
+                f"📍 合约地址: {contract_address}",
+                f"📊 总交易数: {len(all_txs)}",
+                "\n=== 交易统计 ===",
+                f"✅ 成功交易: {sum(1 for tx in all_txs if tx['状态'] == '成功')}",
+                f"❌ 失败交易: {sum(1 for tx in all_txs if tx['状态'] == '失败')}",
+                f"💰 总手续费: {sum(tx['手续费'] for tx in all_txs):.4f} SOL",
+                "\n=== 时间分布 ===",
+            ]
+            
+            # 按时间排序
+            all_txs.sort(key=lambda x: x['时间'])
+            if all_txs:
+                report.extend([
+                    f"最早交易: {all_txs[0]['时间']}",
+                    f"最近交易: {all_txs[-1]['时间']}"
+                ])
+                
+                # 分析交易频率
+                time_diffs = []
+                for i in range(1, len(all_txs)):
+                    t1 = datetime.strptime(all_txs[i-1]['时间'], "%Y-%m-%d %H:%M:%S")
+                    t2 = datetime.strptime(all_txs[i]['时间'], "%Y-%m-%d %H:%M:%S")
+                    time_diffs.append((t2 - t1).total_seconds())
+                
+                if time_diffs:
+                    avg_interval = sum(time_diffs) / len(time_diffs)
+                    report.append(f"平均交易间隔: {avg_interval:.2f} 秒")
+                    
+                    # 检测高频交易
+                    high_freq_count = sum(1 for diff in time_diffs if diff < 5)
+                    if high_freq_count > 0:
+                        report.append(f"\n⚠️ 发现 {high_freq_count} 笔高频交易(间隔<5秒)")
+            
+            # 详细交易记录
+            report.extend([
+                "\n=== 详细交易记录 ===",
+                "(按时间顺序排列)\n"
+            ])
+            
+            for tx in all_txs:
+                report.extend([
+                    f"交易签名: {tx['签名']}",
+                    f"时间: {tx['时间']}",
+                    f"状态: {'✅ 成功' if tx['状态'] == '成功' else '❌ 失败'}",
+                    f"区块: {tx['区块']}",
+                    f"手续费: {tx['手续费']:.6f} SOL",
+                    f"指令数: {tx['指令数']}",
+                    f"交互账户: {', '.join(tx['交互账户'][:5])}{'...' if len(tx['交互账户']) > 5 else ''}",
+                    "-" * 50
+                ])
+            
+            return "\n".join(report)
+            
+        except Exception as e:
+            return f"生成交易报告失败: {str(e)}"
+
+    def save_transaction_report(self, contract_address: str) -> str:
+        """保存交易分析报告"""
+        report = self.generate_transaction_report(contract_address)
+        
+        # 使用pathlib处理路径
+        reports_dir = Path("transaction_reports")
+        reports_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        clean_address = "".join(c for c in contract_address if c.isalnum() or c in ('_', '-'))
+        filename = reports_dir / f"tx_analysis_{clean_address[:8]}_{timestamp}.txt"
+        
+        # 根据系统调整编码
+        encoding = 'utf-8-sig' if detect_os() == 'windows' else 'utf-8'
+        
+        with open(filename, 'w', encoding=encoding) as f:
+            f.write(report)
+        
+        return str(filename)
 
 def save_report(report: str, contract_address: str, format: str = 'txt'):
     """跨平台保存报告"""
@@ -1154,10 +1191,325 @@ def print_menu():
 === Solana 合约分析工具 ===
 1. 分析单个合约
 2. 批量分析多个合约
+3. 生成交易历史报告
+4. 管理RPC节点
+5. 管理API密钥
 0. 退出程序
 =====================""")
 
+def manage_rpc_nodes(analyzer):
+    """管理RPC节点"""
+    while True:
+        print("""
+=== RPC节点管理 ===
+1. 查看当前节点
+2. 添加新节点
+3. 测试所有节点
+4. 清空节点列表
+5. 恢复默认节点
+0. 返回主菜单
+================""")
+        
+        choice = input("\n请选择功能 (0-5): ").strip()
+        
+        if choice == '0':
+            break
+            
+        elif choice == '1':
+            print("\n当前RPC节点列表:")
+            for i, endpoint in enumerate(analyzer.rpc_endpoints, 1):
+                print(f"{i}. {endpoint}")
+            
+        elif choice == '2':
+            print("\n请输入RPC节点地址（每行一个，输入空行结束）:")
+            print("格式示例:")
+            print("  http://64.130.50.132:8899")
+            print("  https://example.com/rpc")
+            new_endpoints = []
+            while True:
+                endpoint = input().strip()
+                if not endpoint:
+                    break
+                # 去除可能的"HTTP:"前缀
+                endpoint = endpoint.replace("HTTP:", "").replace("HTTPS:", "").strip()
+                if not (endpoint.startswith('http://') or endpoint.startswith('https://')):
+                    endpoint = 'http://' + endpoint
+                new_endpoints.append(endpoint)
+            
+            if new_endpoints:
+                print("\n正在测试新节点...")
+                for endpoint in new_endpoints:
+                    try:
+                        # 测试节点连接
+                        headers = {'Content-Type': 'application/json'}
+                        response = requests.post(
+                            endpoint,
+                            json={"jsonrpc": "2.0", "id": 1, "method": "getHealth"},
+                            headers=headers,
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            analyzer.rpc_endpoints.append(endpoint)
+                            print(f"✅ 节点添加成功: {endpoint}")
+                        else:
+                            print(f"❌ 节点测试失败: {endpoint} (状态码: {response.status_code})")
+                    except Exception as e:
+                        print(f"❌ 节点测试失败: {endpoint} ({str(e)})")
+                
+                print(f"\n成功添加 {len(new_endpoints)} 个节点")
+            
+        elif choice == '3':
+            print("\n开始测试所有节点...")
+            working_endpoints = []
+            for endpoint in analyzer.rpc_endpoints:
+                try:
+                    print(f"\n测试节点: {endpoint}")
+                    response = requests.get(endpoint, timeout=10)
+                    if response.status_code == 200:
+                        # 尝试获取区块高度
+                        client = Client(endpoint)
+                        slot = client.get_slot()
+                        print(f"✅ 节点正常 (当前区块: {slot})")
+                        working_endpoints.append(endpoint)
+                    else:
+                        print("❌ 节点响应异常")
+                except Exception as e:
+                    print(f"❌ 测试失败: {str(e)}")
+            
+            # 更新节点列表
+            analyzer.rpc_endpoints = working_endpoints
+            print(f"\n测试完成，当前可用节点: {len(working_endpoints)} 个")
+            
+        elif choice == '4':
+            confirm = input("\n确定要清空所有节点吗？(y/N): ").strip().lower()
+            if confirm == 'y':
+                analyzer.rpc_endpoints = []
+                print("已清空节点列表")
+            
+        elif choice == '5':
+            analyzer.rpc_endpoints = [
+                "https://api.mainnet-beta.solana.com",
+                "https://solana-mainnet.g.alchemy.com/v2/demo",
+                "https://rpc.ankr.com/solana"
+            ]
+            print("已恢复默认节点列表")
+        
+        input("\n按回车键继续...")
+
+def manage_api_keys(analyzer):
+    """管理API密钥"""
+    while True:
+        print("""
+=== API密钥管理 ===
+1. 查看当前API密钥
+2. 添加/更新Solscan API密钥
+3. 添加/更新其他API密钥
+0. 返回主菜单
+================""")
+        
+        choice = input("\n请选择功能 (0-3): ").strip()
+        
+        if choice == '0':
+            break
+            
+        elif choice == '1':
+            print("\n当前API密钥:")
+            if hasattr(analyzer, 'api_keys'):
+                for service, key in analyzer.api_keys.items():
+                    masked_key = key[:6] + "*" * (len(key) - 10) + key[-4:] if key else "未设置"
+                    print(f"{service}: {masked_key}")
+            else:
+                print("未设置任何API密钥")
+            
+        elif choice == '2':
+            print("\n请输入Solscan API密钥:")
+            print("(从 https://docs.solscan.io/ 获取)")
+            api_key = input().strip()
+            if api_key:
+                # 测试API密钥
+                try:
+                    # 使用更可靠的测试端点
+                    test_url = "https://public-api.solscan.io/account/tokens"
+                    params = {
+                        "account": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"  # 使用一个已知的合约地址测试
+                    }
+                    headers = {
+                        "token": api_key,
+                        "Accept": "application/json"
+                    }
+                    response = requests.get(test_url, params=params, headers=headers)
+                    
+                    if response.status_code in [200, 429]:  # 429表示超过请求限制，但API key是有效的
+                        if not hasattr(analyzer, 'api_keys'):
+                            analyzer.api_keys = {}
+                        analyzer.api_keys['solscan'] = api_key
+                        # 保存到配置文件
+                        save_api_keys(analyzer.api_keys)
+                        print("✅ Solscan API密钥添加成功！")
+                        
+                        if response.status_code == 429:
+                            print("⚠️ API请求已达到限制，但密钥是有效的")
+                    else:
+                        print(f"❌ API密钥测试失败: {response.status_code}")
+                        print(f"响应内容: {response.text}")
+                except Exception as e:
+                    print(f"❌ API密钥测试失败: {str(e)}")
+            
+        elif choice == '3':
+            print("\n支持的API服务:")
+            services = ["solana_fm", "helius", "quicknode"]
+            for i, service in enumerate(services, 1):
+                print(f"{i}. {service}")
+            
+            service_idx = input("\n请选择API服务 (1-3): ").strip()
+            if service_idx.isdigit() and 1 <= int(service_idx) <= len(services):
+                service = services[int(service_idx) - 1]
+                print(f"\n请输入{service} API密钥:")
+                api_key = input().strip()
+                if api_key:
+                    if not hasattr(analyzer, 'api_keys'):
+                        analyzer.api_keys = {}
+                    analyzer.api_keys[service] = api_key
+                    # 保存到配置文件
+                    save_api_keys(analyzer.api_keys)
+                    print(f"✅ {service} API密钥已保存")
+        
+        input("\n按回车键继续...")
+
+def save_api_keys(api_keys: dict):
+    """保存API密钥到配置文件"""
+    config_file = Path("config.json")
+    try:
+        # 读取现有配置
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        else:
+            config = {}
+        
+        # 更新API密钥
+        config['api_keys'] = api_keys
+        
+        # 保存配置
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+            
+    except Exception as e:
+        print(f"保存配置失败: {str(e)}")
+
+def load_api_keys() -> dict:
+    """从配置文件加载API密钥"""
+    config_file = Path("config.json")
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                return config.get('api_keys', {})
+    except Exception as e:
+        print(f"加载配置失败: {str(e)}")
+    return {}
+
+def check_and_setup_venv():
+    """完全自动化的环境设置"""
+    def is_venv():
+        return (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) or \
+               (hasattr(sys, 'real_prefix') and sys.real_prefix != sys.prefix)
+
+    if not is_venv():
+        print("\n🚀 开始全自动环境配置...")
+        try:
+            # 修改1: 使用当前目录而不是/opt目录
+            project_dir = Path.cwd()
+            project_dir.mkdir(exist_ok=True, parents=True)
+            os.chdir(project_dir)
+            print(f"📁 工作目录: {project_dir}")
+
+            # 修改2: 添加python3-venv到系统依赖
+            if detect_os() == 'linux':
+                print("🛠 安装系统依赖...")
+                subprocess.run(['apt-get', 'update', '-qq'], check=True)
+                subprocess.run(['apt-get', 'install', '-y', 
+                              'python3-dev', 'python3-venv', 'libssl-dev',  # 确保包含python3-venv
+                              'build-essential', 'pkg-config', 'curl'], check=True)
+
+            # 修改3: 在当前目录创建虚拟环境
+            venv_path = project_dir / 'venv'
+            if venv_path.exists():
+                print("♻️ 清理旧虚拟环境...")
+                shutil.rmtree(venv_path)
+            print("🐍 创建新虚拟环境...")
+            subprocess.run([sys.executable, '-m', 'venv', str(venv_path)], check=True)
+
+            # 修改4: 获取正确的Python路径
+            venv_python = str(venv_path / 'bin' / 'python') 
+
+            # 安装Rust工具链...
+            print("🦀 安装Rust工具链...")
+            rust_script = subprocess.run(
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs",
+                shell=True, capture_output=True, text=True, check=True
+            )
+            subprocess.run([
+                "sh", "-c", 
+                rust_script.stdout.replace("--verbose", "--quiet -y") + " > /dev/null 2>&1"
+            ], check=True)
+            
+            # 设置永久环境变量
+            cargo_path = Path.home() / '.cargo' / 'env'
+            with open(cargo_path, 'a') as f:
+                f.write(f'\nexport PATH="$PATH:{Path.home()}/.cargo/bin"')
+
+            # 安装Python依赖
+            print("📦 安装Python依赖...")
+            subprocess.run(
+                [venv_python, '-m', 'pip', 'install', '-q', '--upgrade', 'pip'],
+                check=True
+            )
+            subprocess.run([
+                venv_python, '-m', 'pip', 'install', '-q',
+                'setuptools-rust==1.7.0',
+                'construct==2.10.68',
+                'base58==2.1.1',
+                'PyNaCl==1.5.0',
+                'solana==0.25.1',
+                'solders'
+            ], check=True)
+
+            # 重启程序
+            print("✅ 环境配置完成！正在重启程序...")
+            os.execl(venv_python, venv_python, *sys.argv)
+
+        except subprocess.CalledProcessError as e:
+            print(f"❌ 安装步骤失败: {e.cmd}")
+            print(f"错误输出: {e.stderr.decode()}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ 意外错误: {str(e)}")
+            sys.exit(1)
+    else:
+        try:
+            from solders.pubkey import Pubkey
+            from solana.rpc.api import Client
+            print("✅ 环境验证通过")
+        except ImportError as e:
+            print(f"🔧 自动修复依赖: {str(e)}")
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'install', '-q',
+                'solders==0.16.0', 'solana==0.25.1'
+            ], check=True)
+            # os.execl(sys.executable, sys.executable, *sys.argv)
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='Solana合约分析工具')
+    parser.add_argument('-a', '--address', help='要分析的合约地址')
+    parser.add_argument('-o', '--output', help='输出文件名')
+    return vars(parser.parse_args())
+
 def main():
+    # 在程序启动时首先检查依赖
+    check_and_setup_venv()
+    
     print(f"\n当前操作系统: {detect_os().upper()}")
     print(f"Python版本: {platform.python_version()}")
     
@@ -1170,10 +1522,13 @@ def main():
         except ImportError:
             print("提示: 安装colorama可获得更好的显示效果 (pip install colorama)")
     
+    # 创建分析器实例
+    analyzer = ContractAnalyzer()
+    
     while True:
         print_menu()
         try:
-            choice = input("\n请选择功能 (0-2): ").strip()
+            choice = input("\n请选择功能 (0-5): ").strip()
             
             if choice == '0':
                 print("感谢使用！")
@@ -1187,7 +1542,6 @@ def main():
                     continue
                     
                 print("\n正在分析合约...")
-                analyzer = ContractAnalyzer()
                 report = analyzer.generate_report(contract_address)
                 print("\n" + report)
                 filename = save_report(report, contract_address)
@@ -1208,13 +1562,31 @@ def main():
                     continue
                 
                 print(f"\n开始分析 {len(addresses)} 个合约...")
-                analyzer = ContractAnalyzer()
                 for addr in addresses:
                     print(f"\n分析合约: {addr}")
                     report = analyzer.generate_report(addr)
                     print("\n" + report)
                     filename = save_report(report, addr)
                     print(f"报告已保存到文件: {filename}")
+            
+            elif choice == '3':
+                # 生成交易历史报告
+                contract_address = input("\n请输入要分析的合约地址: ").strip()
+                if not contract_address:
+                    print("地址不能为空！")
+                    continue
+                
+                print("\n正在分析交易历史...")
+                filename = analyzer.save_transaction_report(contract_address)
+                print(f"\n交易分析报告已保存到: {filename}")
+            
+            elif choice == '4':
+                # 管理RPC节点
+                manage_rpc_nodes(analyzer)
+            
+            elif choice == '5':
+                # 管理API密钥
+                manage_api_keys(analyzer)
             
             input("\n按回车键继续...")
             
@@ -1224,13 +1596,21 @@ def main():
 
 if __name__ == "__main__":
     try:
+        # 首先检查并设置虚拟环境
+        check_and_setup_venv()
+        
+        # 添加自动依赖安装（取消注释并修改以下代码）
+        print("正在自动安装程序依赖...")
+        check_and_install_dependencies()
+        
+        # 检查命令行参数
         if len(sys.argv) > 1:
             # 命令行模式
             args = parse_args()
-            if 'address' in args:
+            if args.get('address'):
                 analyzer = ContractAnalyzer()
                 report = analyzer.generate_report(args['address'])
-                if 'output' in args:
+                if args.get('output'):
                     with open(args['output'], 'w', encoding='utf-8') as f:
                         f.write(report)
                     print(f"报告已保存到: {args['output']}")
